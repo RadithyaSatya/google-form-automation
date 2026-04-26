@@ -1,0 +1,30 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+venv-win/
+env/
+
+# Tooling / test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment files
+.env
+.env.*
+
+# Runtime artifacts
+logs/
+screenshots/
+captcha_screenshots/
+analysis_debug/
+test_results/
+form_structures/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

@@ -13,12 +13,52 @@ Alat untuk mengotomatisasi pengisian Google Form dengan deteksi otomatis struktu
 - **Mode Pengujian:** Isi form tanpa submit untuk menguji konfigurasi
 - **GUI:** Antarmuka grafis untuk penggunaan yang lebih mudah
 
+## Requirements
+
+- Python `3.8+`
+- Disarankan Python `3.10+`
+- Teruji di environment ini dengan Python `3.14.2`
+- `playwright>=1.49,<2`
+- `faker==18.9.0`
+- Browser Playwright Chromium harus diinstal dengan `playwright install`
+- `tkinter` diperlukan jika ingin memakai GUI
+
+## Setup
+
+### 1. Buat virtual environment
+
+macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Windows:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+### 2. Install dependency Python
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Install browser Playwright
+
+```bash
+playwright install
+```
+
 ## Penggunaan
 
 ### Menggunakan GUI
 
-1. Pastikan semua dependensi terinstal: `pip install -r requirements.txt`
-2. Instal browser Playwright: `playwright install`
+1. Pastikan semua dependensi terinstal
+2. Instal browser Playwright
 3. Jalankan aplikasi GUI: `python formfiller_gui.py`
 4. Masukkan URL Google Form dan konfigurasi lainnya
 5. Klik "Uji Form" untuk mode pengujian atau "Mulai Pengisian" untuk mulai mengisi
@@ -26,7 +66,7 @@ Alat untuk mengotomatisasi pengisian Google Form dengan deteksi otomatis struktu
 ### Menggunakan Command Line
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 ```bash
@@ -48,10 +88,10 @@ Gunakan alat ini hanya untuk tujuan pendidikan dan dengan izin pemilik formulir.
 
 ## Dependensi
 
-- Python 3.8+
-- Playwright
-- Faker
-- Tkinter (untuk GUI)
+- Python `3.8+`
+- `playwright>=1.49,<2`
+- `faker==18.9.0`
+- `tkinter` untuk GUI
 
 ## Pengembangan
 

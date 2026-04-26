@@ -221,66 +221,248 @@ async def human_select_option(page, choice_text):
         return False
 
 async def submit_form(page):
-    """Kirim formulir dengan perilaku manusia"""
+    """Identifikasi aksi akhir form dengan aman."""
     try:
-        # Metode 1: Cari tombol submit dengan selector standar
-        submit_button = await page.query_selector('div[role="button"][jsname="M2UYVd"]')
-        
-        # Metode 2: Jika tidak ditemukan, coba dengan JS
-        if not submit_button:
-            # Cari tombol yang terlihat seperti submit
-            js_script = """
-            () => {
-                const buttons = Array.from(document.querySelectorAll('div[role="button"]'));
-                // Ambil tombol yang ada di bagian bawah
-                const visibleButtons = buttons.filter(button => {
-                    const rect = button.getBoundingClientRect();
-                    return rect.top > window.innerHeight / 2;
-                });
-                if (visibleButtons.length > 0) {
-                    const lastButton = visibleButtons[visibleButtons.length - 1];
-                    lastButton.scrollIntoView({behavior: 'smooth', block: 'center'});
-                    setTimeout(() => lastButton.click(), 300);
-                    return true;
-                }
-                return false;
-            }
-            """
-            found = await page.evaluate(js_script)
-            if found:
-                await human_delay_medium()
-                return True
-        
-        # Jika tombol ditemukan dengan metode 1
-        if submit_button:
-            # Scroll dulu ke tombol
-            await submit_button.scroll_into_view_if_needed()
-            await human_delay_medium()
-            
-            # Klik dengan pola manusia
-            box = await submit_button.bounding_box()
-            x = box['x'] + box['width'] * random.uniform(0.3, 0.7)
-            y = box['y'] + box['height'] * random.uniform(0.3, 0.7)
-            await page.mouse.move(x, y, steps=random.randint(5, 10))
-            await human_delay_medium()
-            await page.mouse.click(x, y)
-            return True
-            
-        # Metode 3: Coba kirim dengan keyboard
-        await page.keyboard.press("Tab")
-        await human_delay_short()
-        await page.keyboard.press("Tab")
-        await human_delay_short()
-        await page.keyboard.press("Enter")
-        
+        button_info = await inspect_action_buttons(page)
+        labels = [item["label"] for item in button_info]
+        logger.info(f"Tombol aksi terdeteksi: {labels}")
+
+        for item in button_info:
+            label = item["label"].lower()
+            if "kosongkan formulir" in label or "clear form" in label:
+                logger.warning("Tombol 'Kosongkan formulir' terdeteksi. Tidak akan diklik.")
+
+        submit_labels = {"kirim", "submit", "send"}
+        next_labels = {"berikutnya", "next"}
+
+        submit_candidates = [item for item in button_info if item["label"].lower() in submit_labels]
+        next_candidates = [item for item in button_info if item["label"].lower() in next_labels]
+
+        if next_candidates and not submit_candidates:
+            logger.warning("Form tampak multi-halaman karena tombol 'Berikutnya' terdeteksi. Alur ini tidak dilanjutkan.")
+            return False
+
+        if not submit_candidates:
+            logger.warning("Tombol submit eksplisit tidak ditemukan. Membatalkan agar tidak salah klik.")
+            return False
+
+        submit_button = submit_candidates[0]["element"]
+        await submit_button.scroll_into_view_if_needed()
+        await human_delay_medium()
+
+        box = await submit_button.bounding_box()
+        if not box:
+            logger.warning("Posisi tombol submit tidak bisa dibaca.")
+            return False
+
+        x = box['x'] + box['width'] * random.uniform(0.3, 0.7)
+        y = box['y'] + box['height'] * random.uniform(0.3, 0.7)
+        await page.mouse.move(x, y, steps=random.randint(5, 10))
+        await human_delay_medium()
+        await page.mouse.click(x, y)
         return True
     except Exception as e:
         print(f"Error saat submit form: {str(e)}")
         return False
 
+def normalize_action_label(label):
+    """Normalisasi label tombol agar cocok meski ada ikon/whitespace tambahan."""
+    return " ".join(re.sub(r"[^\w\s-]", " ", (label or "").lower()).split())
+
+async def safe_get_page_content(page, retries=5, delay=0.5):
+    """Ambil HTML halaman dengan retry saat page masih bernavigasi."""
+    last_error = None
+    for _ in range(retries):
+        try:
+            return await page.content()
+        except Exception as e:
+            last_error = e
+            await asyncio.sleep(delay)
+    raise last_error
+
+async def wait_for_form_ready(page):
+    """Tunggu sampai halaman form stabil setelah navigasi antar page."""
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+    except Exception:
+        pass
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
+
+    for _ in range(10):
+        try:
+            await page.wait_for_selector('form, div[role="radiogroup"], input[type="text"], textarea', timeout=1500)
+            return True
+        except Exception:
+            await asyncio.sleep(0.4)
+    return False
+
+async def handle_next_or_submit(page):
+    """Klik tombol Next/Submit yang terlihat dengan prioritas Next lebih dulu."""
+    try:
+        buttons = await inspect_action_buttons(page)
+        labels = [item["label"] for item in buttons]
+        logger.info(f"Tombol aksi terdeteksi: {labels}")
+
+        submit_labels = {"kirim", "submit", "send"}
+        next_labels = {"berikutnya", "next"}
+
+        submit_btn = None
+        next_btn = None
+
+        for item in buttons:
+            normalized_label = normalize_action_label(item["label"])
+
+            if normalized_label in submit_labels:
+                submit_btn = item
+            elif normalized_label in next_labels:
+                next_btn = item
+
+        if next_btn:
+            logger.info("➡️ Next page detected")
+            await human_click_improved(page, next_btn["element"])
+            await wait_for_form_ready(page)
+            await asyncio.sleep(0.8)
+            return "next"
+
+        if submit_btn:
+            logger.info("✅ Submit detected")
+            await human_click_improved(page, submit_btn["element"])
+            return "submit"
+
+        logger.warning("⚠️ No action button found")
+        return "none"
+
+    except Exception as e:
+        logger.error(f"Error handle_next_or_submit: {e}")
+        return "none"
+
+async def inspect_action_buttons(page):
+    """Ambil tombol aksi yang terlihat di halaman untuk diagnosis."""
+    buttons = []
+    elements = await page.query_selector_all('div[role="button"], span[role="button"]')
+    for element in elements:
+        try:
+            text = (await element.inner_text() or "").strip()
+            if not text:
+                continue
+            box = await element.bounding_box()
+            if not box:
+                continue
+            buttons.append({
+                "label": " ".join(text.split()),
+                "element": element,
+                "y": box["y"],
+            })
+        except Exception:
+            continue
+    return sorted(buttons, key=lambda item: item["y"])
+
+async def is_element_visible(element):
+    """Cek apakah elemen benar-benar terlihat di halaman aktif."""
+    try:
+        box = await element.bounding_box()
+        if not box:
+            return False
+        if box["width"] <= 0 or box["height"] <= 0:
+            return False
+        return await element.evaluate("""
+            (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return (
+                    style &&
+                    style.visibility !== "hidden" &&
+                    style.display !== "none" &&
+                    rect.width > 0 &&
+                    rect.height > 0
+                );
+            }
+        """)
+    except Exception:
+        return False
+
+async def extract_question_title(element):
+    """Ambil judul pertanyaan dari container terdekat."""
+    try:
+        title = await element.evaluate("""
+            (el) => {
+                const selectors = [
+                    'div[class*="freebirdFormviewerComponentsQuestionBaseTitle"]',
+                    '[role="heading"]'
+                ];
+
+                let node = el;
+                for (let depth = 0; node && depth < 8; depth += 1, node = node.parentElement) {
+                    for (const selector of selectors) {
+                        const candidate = node.querySelector(selector);
+                        if (candidate) {
+                            const text = (candidate.innerText || candidate.textContent || "").trim();
+                            if (text) {
+                                return text;
+                            }
+                        }
+                    }
+                }
+                return "";
+            }
+        """)
+        cleaned_title = (title or "").strip()
+        cleaned_title = re.sub(r'\n\s*\*+\s*$', '', cleaned_title)
+        cleaned_title = re.sub(r'\s*\*+\s*$', '', cleaned_title)
+        cleaned_title = " ".join(cleaned_title.split())
+        return cleaned_title
+    except Exception:
+        return ""
+
+async def extract_option_label(option_element):
+    """Ambil label opsi radio/checkbox dengan prioritas ke label lokal, bukan seluruh grup."""
+    try:
+        label = await option_element.evaluate("""
+            (el) => {
+                const candidates = [
+                    el.getAttribute("data-value"),
+                    el.getAttribute("aria-label"),
+                    el.innerText,
+                    el.textContent,
+                ];
+
+                const localSelectors = [
+                    '[dir="auto"]',
+                    'span',
+                    'div'
+                ];
+
+                for (const selector of localSelectors) {
+                    const nodes = el.querySelectorAll(selector);
+                    for (const node of nodes) {
+                        const text = (node.innerText || node.textContent || "").trim();
+                        if (text && text.length < 120) {
+                            candidates.push(text);
+                        }
+                    }
+                }
+
+                for (const raw of candidates) {
+                    const cleaned = (raw || "").trim();
+                    if (cleaned) {
+                        return cleaned;
+                    }
+                }
+                return "";
+            }
+        """)
+        return " ".join((label or "").split())
+    except Exception:
+        return ""
+
 class FormAnalyzer:
     def __init__(self):
         self.questions = []
+        self.sections = []
         self.text_inputs = []
         self.radio_groups = []
         self.checkbox_groups = []
@@ -290,7 +472,7 @@ class FormAnalyzer:
         
     async def detect_language(self, page):
         """Mendeteksi bahasa formulir"""
-        page_content = await page.content()
+        page_content = await safe_get_page_content(page)
         
         # Cek bahasa berdasarkan kata-kata umum
         language_markers = {
@@ -322,101 +504,118 @@ class FormAnalyzer:
         """Analisis struktur formulir Google dengan dukungan lebih banyak jenis pertanyaan"""
         self.debug_mode = debug_mode
         logger.info("Menganalisis struktur formulir...")
+        await wait_for_form_ready(page)
+        self.questions = []
+        self.sections = []
+        self.text_inputs = []
+        self.radio_groups = []
+        self.checkbox_groups = []
+        self.dropdown_groups = []
         
         # Deteksi bahasa formulir
         await self.detect_language(page)
         
         # Deteksi input teks
-        self.text_inputs = await page.query_selector_all('input[type="text"], input[type="email"], input[type="tel"], input[type="number"], textarea')
+        raw_text_inputs = await page.query_selector_all('input[type="text"], input[type="email"], input[type="tel"], input[type="number"], textarea')
+        self.text_inputs = [element for element in raw_text_inputs if await is_element_visible(element)]
         logger.info(f"Terdeteksi {len(self.text_inputs)} input teks/email/nomor/area teks")
         
         # Deteksi pertanyaan dengan opsi radio
-        radio_groups = await page.query_selector_all('div[role="radiogroup"]')
+        raw_radio_groups = await page.query_selector_all('div[role="radiogroup"]')
+        radio_groups = [element for element in raw_radio_groups if await is_element_visible(element)]
         logger.info(f"Terdeteksi {len(radio_groups)} grup radio (pilihan tunggal)")
         
         # Ambil teks pertanyaan dan opsi untuk setiap grup radio
         for i, group in enumerate(radio_groups):
             try:
-                question_elem = await group.query_selector_all('xpath=./preceding::div[contains(@class, "freebirdFormviewerComponentsQuestionBaseTitle")][1]')
-                if question_elem:
-                    question_text = await question_elem[0].text_content()
-                    options_elems = await group.query_selector_all('div[role="radio"]')
-                    options = []
-                    for option in options_elems:
-                        option_text = await option.text_content()
-                        if option_text.strip():
-                            options.append(option_text.strip())
-                    
-                    if debug_mode:
-                        logger.debug(f"Radio group: {question_text.strip()} - Options: {options}")
-                    
-                    self.radio_groups.append({
-                        'question': question_text.strip(),
-                        'options': options,
-                        'element': group
-                    })
+                question_text = await extract_question_title(group)
+                if not question_text:
+                    continue
+
+                options_elems = await group.query_selector_all('div[role="radio"]')
+                options = []
+                for option in options_elems:
+                    if not await is_element_visible(option):
+                        continue
+                    option_text = await extract_option_label(option)
+                    if option_text:
+                        options.append(option_text)
+
+                if debug_mode:
+                    logger.debug(f"Radio group: {question_text.strip()} - Options: {options}")
+
+                self.radio_groups.append({
+                    'question': question_text.strip(),
+                    'options': options,
+                    'element': group
+                })
             except Exception as e:
                 logger.error(f"Error saat menganalisis grup radio {i}: {str(e)}")
         
         # Deteksi pertanyaan checkbox
-        checkbox_groups = await page.query_selector_all('div[role="list"][jsname="L8DVEb"]')
+        raw_checkbox_groups = await page.query_selector_all('div[role="list"][jsname="L8DVEb"]')
+        checkbox_groups = [element for element in raw_checkbox_groups if await is_element_visible(element)]
         logger.info(f"Terdeteksi {len(checkbox_groups)} grup checkbox (pilihan ganda)")
         
         # Ambil teks pertanyaan dan opsi untuk setiap grup checkbox
         for i, group in enumerate(checkbox_groups):
             try:
-                question_elem = await group.query_selector_all('xpath=./preceding::div[contains(@class, "freebirdFormviewerComponentsQuestionBaseTitle")][1]')
-                if question_elem:
-                    question_text = await question_elem[0].text_content()
-                    options_elems = await group.query_selector_all('div[role="checkbox"]')
-                    options = []
-                    for option in options_elems:
-                        option_text = await option.text_content()
-                        if option_text.strip():
-                            options.append(option_text.strip())
-                    
-                    if debug_mode:
-                        logger.debug(f"Checkbox group: {question_text.strip()} - Options: {options}")
-                    
-                    self.checkbox_groups.append({
-                        'question': question_text.strip(),
-                        'options': options,
-                        'element': group
-                    })
+                question_text = await extract_question_title(group)
+                if not question_text:
+                    continue
+
+                options_elems = await group.query_selector_all('div[role="checkbox"]')
+                options = []
+                for option in options_elems:
+                    if not await is_element_visible(option):
+                        continue
+                    option_text = await extract_option_label(option)
+                    if option_text:
+                        options.append(option_text)
+
+                if debug_mode:
+                    logger.debug(f"Checkbox group: {question_text.strip()} - Options: {options}")
+
+                self.checkbox_groups.append({
+                    'question': question_text.strip(),
+                    'options': options,
+                    'element': group
+                })
             except Exception as e:
                 logger.error(f"Error saat menganalisis grup checkbox {i}: {str(e)}")
         
         # Deteksi dropdown
-        dropdown_groups = await page.query_selector_all('div[role="listbox"]')
+        raw_dropdown_groups = await page.query_selector_all('div[role="listbox"]')
+        dropdown_groups = [element for element in raw_dropdown_groups if await is_element_visible(element)]
         logger.info(f"Terdeteksi {len(dropdown_groups)} dropdown")
         
         for i, dropdown in enumerate(dropdown_groups):
             try:
-                # Cari pertanyaan untuk dropdown
-                question_elem = await dropdown.query_selector_all('xpath=./preceding::div[contains(@class, "freebirdFormviewerComponentsQuestionBaseTitle")][1]')
-                if question_elem:
-                    question_text = await question_elem[0].text_content()
-                    # Untuk dropdown, kita perlu mengkliknya untuk melihat opsi
-                    await dropdown.click()
-                    await page.wait_for_timeout(500)
-                    options_elems = await page.query_selector_all('div[role="option"]')
-                    options = []
-                    for option in options_elems:
-                        option_text = await option.text_content()
-                        if option_text.strip():
-                            options.append(option_text.strip())
-                    
-                    # Klik di luar untuk menutup dropdown
-                    await page.mouse.click(10, 10)
-                    
-                    if debug_mode:
-                        logger.debug(f"Dropdown: {question_text.strip()} - Options: {options}")
-                    
-                    self.dropdown_groups.append({
-                        'question': question_text.strip(),
-                        'options': options,
-                        'element': dropdown
-                    })
+                question_text = await extract_question_title(dropdown)
+                if not question_text:
+                    continue
+
+                await dropdown.click()
+                await page.wait_for_timeout(500)
+                options_elems = await page.query_selector_all('div[role="option"]')
+                options = []
+                for option in options_elems:
+                    if not await is_element_visible(option):
+                        continue
+                    option_text = await option.text_content()
+                    if option_text and option_text.strip():
+                        options.append(option_text.strip())
+
+                await page.mouse.click(10, 10)
+
+                if debug_mode:
+                    logger.debug(f"Dropdown: {question_text.strip()} - Options: {options}")
+
+                self.dropdown_groups.append({
+                    'question': question_text.strip(),
+                    'options': options,
+                    'element': dropdown
+                })
             except Exception as e:
                 logger.error(f"Error saat menganalisis dropdown {i}: {str(e)}")
         
@@ -426,18 +625,20 @@ class FormAnalyzer:
         # Text inputs
         for i, input_elem in enumerate(self.text_inputs):
             try:
-                label_elem = await input_elem.query_selector_all('xpath=./preceding::div[contains(@class, "freebirdFormviewerComponentsQuestionBaseTitle")][1]')
-                if label_elem:
-                    label_text = await label_elem[0].text_content()
-                    input_type = await input_elem.get_attribute('type') or 'text'
-                    if input_type == 'textarea':
-                        input_type = 'long_text'
-                    
-                    self.questions.append({
-                        'type': input_type,
-                        'question': label_text.strip(),
-                        'element': input_elem
-                    })
+                label_text = await extract_question_title(input_elem)
+                if not label_text:
+                    continue
+
+                tag_name = await input_elem.evaluate("(el) => el.tagName.toLowerCase()")
+                input_type = await input_elem.get_attribute('type') or 'text'
+                if tag_name == 'textarea':
+                    input_type = 'long_text'
+
+                self.questions.append({
+                    'type': input_type,
+                    'question': label_text.strip(),
+                    'element': input_elem
+                })
             except Exception as e:
                 logger.error(f"Error saat menganalisis input teks {i}: {str(e)}")
         
@@ -467,13 +668,121 @@ class FormAnalyzer:
                 'options': group['options'],
                 'element': group['element']
             })
+
+        # Fallback embedded-data hanya dipakai bila halaman aktif benar-benar tidak punya kontrol terdeteksi.
+        if not self.questions and not (self.text_inputs or radio_groups or checkbox_groups or dropdown_groups):
+            page_content = await safe_get_page_content(page)
+            embedded_questions = self.extract_questions_from_embedded_data(page_content)
+            if embedded_questions:
+                self.questions.extend(embedded_questions)
+                logger.info(f"Fallback embedded-data berhasil: {len(embedded_questions)} pertanyaan diekstrak")
         
         logger.info(f"Total {len(self.questions)} pertanyaan terdeteksi")
+
+        if not self.questions:
+            await self.save_analysis_debug(page, "no_questions_detected")
         
         # Save form structure to file for future use
         self.save_form_structure()
         
         return self.questions
+
+    def extract_questions_from_embedded_data(self, page_content):
+        """Ekstrak pertanyaan dari FB_PUBLIC_LOAD_DATA_ saat selector DOM tidak stabil."""
+        try:
+            match = re.search(r'FB_PUBLIC_LOAD_DATA_\s*=\s*(\[.*?\]);</script>', page_content, re.DOTALL)
+            if not match:
+                return []
+
+            data = json.loads(match.group(1))
+            extracted = []
+            seen = set()
+            current_section = None
+
+            def collect(node):
+                nonlocal current_section
+                if isinstance(node, list):
+                    if self._looks_like_embedded_question(node):
+                        if self._is_section_header(node):
+                            current_section = (node[1] or "").strip()
+                            if current_section and current_section not in self.sections:
+                                self.sections.append(current_section)
+                        question = self._parse_embedded_question(node)
+                        if question and question['question'] not in seen:
+                            if current_section:
+                                question['section'] = current_section
+                            extracted.append(question)
+                            seen.add(question['question'])
+                    for item in node:
+                        collect(item)
+
+            collect(data)
+            return extracted
+        except Exception as e:
+            logger.error(f"Gagal ekstrak embedded form data: {str(e)}")
+            return []
+
+    def _looks_like_embedded_question(self, node):
+        return (
+            isinstance(node, list)
+            and len(node) >= 4
+            and isinstance(node[0], int)
+            and isinstance(node[1], str)
+            and isinstance(node[3], int)
+        )
+
+    def _is_section_header(self, node):
+        return self._looks_like_embedded_question(node) and node[3] == 8
+
+    def _parse_embedded_question(self, node):
+        title = (node[1] or "").strip()
+        qtype = node[3]
+
+        # Abaikan section/header/deskripsi.
+        if not title or qtype in {8}:
+            return None
+
+        options = []
+        if len(node) > 4 and isinstance(node[4], list):
+            for entry in node[4]:
+                if isinstance(entry, list) and len(entry) > 1 and isinstance(entry[1], list):
+                    for opt in entry[1]:
+                        if isinstance(opt, list) and opt and isinstance(opt[0], str):
+                            option_text = opt[0].strip()
+                            if option_text:
+                                options.append(option_text)
+
+        if options:
+            return {
+                'type': 'radio',
+                'question': title,
+                'options': options,
+            }
+
+        # Fallback sederhana untuk isian teks.
+        return {
+            'type': 'text',
+            'question': title,
+        }
+
+    async def save_analysis_debug(self, page, reason):
+        """Simpan artefak debug saat analisis form gagal."""
+        try:
+            debug_dir = "analysis_debug"
+            if not os.path.exists(debug_dir):
+                os.makedirs(debug_dir)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_file = os.path.join(debug_dir, f"{reason}_{timestamp}.png")
+            html_file = os.path.join(debug_dir, f"{reason}_{timestamp}.html")
+
+            await page.screenshot(path=screenshot_file, full_page=True)
+            with open(html_file, "w", encoding="utf-8") as f:
+                f.write(await safe_get_page_content(page))
+
+            logger.warning(f"Artefak debug analisis disimpan: {screenshot_file}, {html_file}")
+        except Exception as e:
+            logger.error(f"Gagal menyimpan artefak debug analisis: {str(e)}")
     
     def save_form_structure(self):
         """Simpan struktur form untuk digunakan di masa depan"""
@@ -492,6 +801,7 @@ class FormAnalyzer:
             form_structure = {
                 'url': FORM_URL,
                 'language': self.language,
+                'sections': self.sections,
                 'questions': serializable_questions,
                 'timestamp': datetime.now().isoformat()
             }
@@ -523,7 +833,7 @@ class FormAnalyzer:
                 
                 # Periksa apakah struktur masih valid (maksimal 1 hari)
                 timestamp = datetime.fromisoformat(structure['timestamp'])
-                if (datetime.now() - timestamp).days < 1 and structure['url'] == url:
+                if (datetime.now() - timestamp).days < 1 and structure['url'] == url and structure.get('questions'):
                     self.language = structure['language']
                     # Konversi kembali ke format internal
                     self.questions = structure['questions']
@@ -538,6 +848,25 @@ class FormAnalyzer:
     def generate_answer(self, question):
         """Menghasilkan jawaban acak berdasarkan jenis pertanyaan dengan peningkatan multi-bahasa"""
         question_text = question['question'].lower()
+
+        def filter_free_text_options(options):
+            blocked_markers = [
+                "lainnya",
+                "yang lain",
+                "lain lain",
+                "lain-lain",
+                "other",
+                "others",
+                "prefer to self describe",
+                "self describe",
+            ]
+            filtered = []
+            for option in options:
+                normalized_option = normalize_action_label(option)
+                if any(marker in normalized_option for marker in blocked_markers):
+                    continue
+                filtered.append(option)
+            return filtered
         
         if question['type'] in ['text', 'email', 'tel', 'number']:
             # Deteksi jenis teks yang diharapkan berdasarkan bahasa
@@ -627,26 +956,154 @@ class FormAnalyzer:
                 
         elif question['type'] == 'radio':
             # Pilih satu opsi acak
+            valid_options = filter_free_text_options(question['options'])
+            if len(valid_options) > 0:
+                return random.choice(valid_options)
             if len(question['options']) > 0:
                 return random.choice(question['options'])
             return None
         
         elif question['type'] == 'dropdown':
             # Pilih satu opsi acak, tapi hindari opsi pertama (biasanya "Pilih...")
-            if len(question['options']) > 1:
-                return random.choice(question['options'][1:])
-            elif len(question['options']) == 1:
-                return question['options'][0]
+            dropdown_options = question['options'][1:] if len(question['options']) > 1 else question['options']
+            valid_options = filter_free_text_options(dropdown_options)
+            if len(valid_options) > 0:
+                return random.choice(valid_options)
+            if len(dropdown_options) > 0:
+                return random.choice(dropdown_options)
             return None
             
         elif question['type'] == 'checkbox':
             # Pilih 1-3 opsi acak (atau kurang jika tidak ada cukup opsi)
+            valid_options = filter_free_text_options(question['options'])
+            if len(valid_options) > 0:
+                num_choices = min(random.randint(1, 3), len(valid_options))
+                return random.sample(valid_options, num_choices)
             if len(question['options']) > 0:
                 num_choices = min(random.randint(1, 3), len(question['options']))
                 return random.sample(question['options'], num_choices)
             return []
             
         return None
+
+async def fill_current_page_questions(page, form_analyzer, test_mode=False):
+    """Isi semua pertanyaan yang terdeteksi pada halaman aktif."""
+    if not form_analyzer.questions:
+        return
+
+    for i, question in enumerate(form_analyzer.questions):
+        logger.info(f"Mengisi pertanyaan {i+1}: {question['question'][:50]}{'...' if len(question['question']) > 50 else ''}")
+
+        try:
+            if 'element' in question:
+                await question['element'].scroll_into_view_if_needed()
+            await human_delay_short()
+        except Exception:
+            await natural_scroll_improved(page, 200)
+
+        answer = form_analyzer.generate_answer(question)
+
+        if test_mode:
+            logger.debug(f"Jawaban yang akan dimasukkan: {answer}")
+            if random.random() < 0.5:
+                logger.debug("Melewati pertanyaan ini (mode pengujian)")
+                continue
+
+        if question['type'] == 'text':
+            try:
+                input_elem = question.get('element')
+                if input_elem:
+                    await human_type_into_element(page, input_elem, answer)
+                else:
+                    logger.warning(f"Tidak bisa menemukan input teks untuk pertanyaan {i+1}")
+            except Exception as e:
+                logger.error(f"Error saat mengisi teks: {str(e)}")
+
+        elif question['type'] in ['email', 'tel', 'number']:
+            try:
+                input_elem = question.get('element')
+                if input_elem:
+                    await human_type_into_element(page, input_elem, answer)
+                else:
+                    logger.warning(f"Tidak bisa menemukan input {question['type']} untuk pertanyaan {i+1}")
+            except Exception as e:
+                logger.error(f"Error saat mengisi {question['type']}: {str(e)}")
+
+        elif question['type'] == 'long_text':
+            try:
+                textarea = question.get('element')
+                if textarea:
+                    await human_type_into_element(page, textarea, answer)
+                else:
+                    logger.warning(f"Tidak bisa menemukan textarea untuk pertanyaan {i+1}")
+            except Exception as e:
+                logger.error(f"Error saat mengisi textarea: {str(e)}")
+
+        elif question['type'] == 'radio':
+            if answer:
+                group_element = question.get('element')
+                if group_element:
+                    selected = await select_group_option(page, group_element, answer, "radio")
+                    if not selected:
+                        await human_select_option(page, answer)
+                else:
+                    await human_select_option(page, answer)
+
+        elif question['type'] == 'dropdown':
+            if answer:
+                try:
+                    if 'element' in question:
+                        await human_click_improved(page, question['element'])
+                        await human_delay_medium()
+
+                        option_elements = await page.query_selector_all('div[role="option"]')
+                        for option_elem in option_elements:
+                            if not await is_element_visible(option_elem):
+                                continue
+                            option_text = (await option_elem.text_content() or "").strip()
+                            if normalize_action_label(option_text) == normalize_action_label(answer.strip()):
+                                await human_click_improved(page, option_elem)
+                                break
+                except Exception as e:
+                    logger.error(f"Error saat memilih dropdown: {str(e)}")
+
+        elif question['type'] == 'checkbox':
+            for option in answer:
+                group_element = question.get('element')
+                if group_element:
+                    selected = await select_group_option(page, group_element, option, "checkbox")
+                    if not selected:
+                        await human_select_option(page, option)
+                else:
+                    await human_select_option(page, option)
+                await human_delay_medium()
+
+        await human_delay_medium()
+
+async def detect_submission_success(page):
+    """Deteksi apakah form sudah benar-benar terkirim."""
+    try:
+        try:
+            await page.wait_for_selector('div.freebirdFormviewerViewResponseConfirmationMessage', timeout=10000)
+            return True
+        except Exception:
+            pass
+
+        current_url = page.url
+        if "formResponse" in current_url:
+            return True
+
+        page_content = await page.content()
+        success_markers = [
+            "Terima kasih",
+            "Thank you",
+            "telah dikirim",
+            "response has been recorded",
+        ]
+        return any(marker in page_content for marker in success_markers)
+    except Exception as e:
+        logger.error(f"Error saat mendeteksi konfirmasi submit: {str(e)}")
+        return False
 
 async def fill_universal_form(page, form_analyzer, response_number, test_mode=False):
     """Mengisi formulir Google secara universal berdasarkan analisis struktur"""
@@ -655,179 +1112,54 @@ async def fill_universal_form(page, form_analyzer, response_number, test_mode=Fa
         await page.goto(FORM_URL)
         await human_delay_medium()
         
-        # Cek apakah ada captcha
+        # Cek apakah ada captcha. Jangan lanjut bila challenge proteksi benar-benar muncul.
         if await detect_captcha(page):
             if test_mode:
                 logger.warning("Captcha terdeteksi dalam mode pengujian. Menghentikan pengujian.")
+            else:
+                logger.warning("Captcha terdeteksi. Membatalkan proses saat ini.")
+            return False
+        
+        page_number = 1
+
+        while True:
+            await form_analyzer.analyze_form(page, debug_mode=test_mode)
+
+            if not form_analyzer.questions:
+                logger.error(f"Analisis form gagal di halaman {page_number}: 0 pertanyaan terdeteksi. Membatalkan proses ini.")
                 return False
-            else:
-                logger.warning("Captcha terdeteksi! Mohon selesaikan captcha secara manual dalam 60 detik.")
-                # Beri pengguna waktu untuk menyelesaikan captcha
-                for i in range(60):
-                    logger.info(f"Menunggu penyelesaian captcha... {60-i} detik tersisa")
-                    await asyncio.sleep(1)
-                
-                # Cek lagi apakah captcha masih ada
-                if await detect_captcha(page):
-                    logger.error("Captcha masih terdeteksi setelah waktu tunggu. Membatalkan pengisian.")
-                    return False
-        
-        # Analisis form pada pengisian pertama
-        if response_number == 1 or not form_analyzer.questions:
-            # Coba muat struktur yang tersimpan dahulu
-            if not form_analyzer.load_form_structure(FORM_URL):
-                # Jika tidak ada, analisis form
-                await form_analyzer.analyze_form(page, debug_mode=test_mode)
-        
-        # Simulasi membaca formulir
-        await human_delay_medium()
-        
-        # Scroll perlahan ke bawah saat membaca
-        await natural_scroll_improved(page, 300, smooth=True)
-        
-        # Isi form berdasarkan hasil analisis
-        for i, question in enumerate(form_analyzer.questions):
-            logger.info(f"Mengisi pertanyaan {i+1}: {question['question'][:50]}{'...' if len(question['question']) > 50 else ''}")
-            
-            # Scroll ke pertanyaan
-            try:
-                if 'element' in question:
-                    await question['element'].scroll_into_view_if_needed()
-                await human_delay_short()
-            except:
-                await natural_scroll_improved(page, 200)
-            
-            # Menghasilkan jawaban
-            answer = form_analyzer.generate_answer(question)
-            
-            # Dalam mode pengujian, tampilkan jawaban yang akan dimasukkan
-            if test_mode:
-                logger.debug(f"Jawaban yang akan dimasukkan: {answer}")
-                if random.random() < 0.5:  # 50% kemungkinan untuk tidak mengisi dalam mode pengujian
-                    logger.debug("Melewati pertanyaan ini (mode pengujian)")
-                    continue
-            
-            # Mengisi jawaban berdasarkan jenis pertanyaan
-            if question['type'] == 'text':
-                try:
-                    # Cari input teks
-                    input_selector = 'input[type="text"]'
-                    inputs = await page.query_selector_all(input_selector)
-                    if i < len(inputs):
-                        await human_type_improved(page, input_selector, answer)
-                    else:
-                        logger.warning(f"Tidak bisa menemukan input teks untuk pertanyaan {i+1}")
-                except Exception as e:
-                    logger.error(f"Error saat mengisi teks: {str(e)}")
-            
-            elif question['type'] in ['email', 'tel', 'number']:
-                try:
-                    # Cari input berdasarkan tipe
-                    input_selector = f'input[type="{question["type"]}"]'
-                    input_elem = await page.query_selector(input_selector)
-                    if input_elem:
-                        await human_type_improved(page, input_selector, answer)
-                    else:
-                        logger.warning(f"Tidak bisa menemukan input {question['type']} untuk pertanyaan {i+1}")
-                except Exception as e:
-                    logger.error(f"Error saat mengisi {question['type']}: {str(e)}")
-            
-            elif question['type'] == 'long_text':
-                try:
-                    # Cari textarea
-                    textarea_selector = 'textarea'
-                    textarea = await page.query_selector(textarea_selector)
-                    if textarea:
-                        await human_type_improved(page, textarea_selector, answer)
-                    else:
-                        logger.warning(f"Tidak bisa menemukan textarea untuk pertanyaan {i+1}")
-                except Exception as e:
-                    logger.error(f"Error saat mengisi textarea: {str(e)}")
-            
-            elif question['type'] == 'radio':
-                if answer:
-                    await human_select_option(page, answer)
-            
-            elif question['type'] == 'dropdown':
-                if answer:
-                    # Untuk dropdown, perlu klik dulu dropdown, lalu pilih opsi
-                    try:
-                        if 'element' in question:
-                            await human_click_improved(page, question['element'])
-                            await human_delay_medium()
-                            
-                            # Cari opsi dalam dropdown
-                            option_elements = await page.query_selector_all('div[role="option"]')
-                            for option_elem in option_elements:
-                                option_text = await option_elem.text_content()
-                                if option_text.strip() == answer.strip():
-                                    await human_click_improved(page, option_elem)
-                                    break
-                    except Exception as e:
-                        logger.error(f"Error saat memilih dropdown: {str(e)}")
-            
-            elif question['type'] == 'checkbox':
-                for option in answer:
-                    await human_select_option(page, option)
-                    await human_delay_medium()
-            
-            # Jeda sebelum pindah ke pertanyaan berikutnya
+
             await human_delay_medium()
-        
-        # Dalam mode pengujian, jangan submit form
-        if test_mode:
-            logger.info("Mode pengujian aktif: form tidak akan disubmit")
-            test_dir = "test_results"
-            if not os.path.exists(test_dir):
-                os.makedirs(test_dir)
-            await page.screenshot(path=f"{test_dir}/test_form_filled_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-            return True
-        
-        # Scroll ke bawah untuk menemukan tombol submit
-        await natural_scroll_improved(page, 300)
-        await human_delay_long()  # Jeda sebelum kirim (seolah membaca ulang)
-        
-        # Submit formulir
-        await submit_form(page)
-        
-        # Tunggu konfirmasi pengiriman
-        try:
-            # Coba beberapa cara untuk mendeteksi form berhasil terkirim
-            success = False
-            
-            # Cara 1: Tunggu konfirmasi
-            try:
-                await page.wait_for_selector('div.freebirdFormviewerViewResponseConfirmationMessage', timeout=10000)
-                success = True
-            except:
-                pass
-            
-            # Cara 2: Deteksi perubahan URL
-            if not success:
-                current_url = page.url
-                if "formResponse" in current_url:
-                    success = True
-            
-            # Cara 3: Cek teks konfirmasi
-            if not success:
-                page_content = await page.content()
-                if "Terima kasih" in page_content or "Thank you" in page_content or "telah dikirim" in page_content or "response has been recorded" in page_content:
-                    success = True
-            
-            if success:
-                logger.info(f"Form ke-{response_number} berhasil diisi!")
+            await natural_scroll_improved(page, 300, smooth=True)
+            await fill_current_page_questions(page, form_analyzer, test_mode=test_mode)
+
+            if test_mode:
+                logger.info("Mode pengujian aktif: form tidak akan disubmit")
+                test_dir = "test_results"
+                if not os.path.exists(test_dir):
+                    os.makedirs(test_dir)
+                await page.screenshot(path=f"{test_dir}/test_form_filled_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
                 return True
-            else:
+
+            await natural_scroll_improved(page, 300)
+            await human_delay_long()
+
+            action = await handle_next_or_submit(page)
+
+            if action == "next":
+                page_number += 1
+                continue
+
+            if action == "submit":
+                success = await detect_submission_success(page)
+                if success:
+                    logger.info(f"Form ke-{response_number} berhasil diisi!")
+                    return True
+
                 logger.warning(f"Tidak yakin form ke-{response_number} berhasil terkirim.")
                 return False
-        
-        except Exception as e:
-            logger.error(f"Error saat mendeteksi konfirmasi form ke-{response_number}: {str(e)}")
-            # Screenshot untuk debugging
-            screenshot_dir = "screenshots"
-            if not os.path.exists(screenshot_dir):
-                os.makedirs(screenshot_dir)
-            await page.screenshot(path=f"{screenshot_dir}/error-confirmation-{response_number}.png")
+
+            logger.warning(f"Tidak menemukan tombol aksi valid di halaman {page_number}.")
             return False
     
     except Exception as e:
@@ -843,40 +1175,51 @@ async def fill_universal_form(page, form_analyzer, response_number, test_mode=Fa
 async def detect_captcha(page):
     """Deteksi adanya captcha di halaman"""
     try:
-        # Deteksi reCAPTCHA
-        recaptcha_frame = await page.query_selector('iframe[title*="recaptcha"], iframe[src*="recaptcha"]')
-        if recaptcha_frame:
-            logger.warning("reCAPTCHA terdeteksi!")
-            # Ambil screenshot untuk referensi
+        captcha_selectors = [
+            ('iframe[title*="recaptcha" i]', "recaptcha"),
+            ('iframe[src*="recaptcha" i]', "recaptcha"),
+            ('iframe[src*="hcaptcha" i]', "hcaptcha"),
+            ('.g-recaptcha', "recaptcha"),
+            ('[data-sitekey]', "captcha_widget"),
+            ('textarea[name="g-recaptcha-response"]', "recaptcha"),
+            ('textarea[name="h-captcha-response"]', "hcaptcha"),
+            ('[aria-label*="captcha" i]', "captcha_ui"),
+            ('[id*="captcha" i]', "captcha_ui"),
+            ('[class*="captcha" i]', "captcha_ui"),
+        ]
+
+        for selector, label in captcha_selectors:
+            element = await page.query_selector(selector)
+            if element:
+                logger.warning(f"Captcha terdeteksi via selector: {label} ({selector})")
+                screenshot_dir = "captcha_screenshots"
+                if not os.path.exists(screenshot_dir):
+                    os.makedirs(screenshot_dir)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                await page.screenshot(path=f"{screenshot_dir}/{label}_{timestamp}.png")
+                return True
+
+        # Fallback teks dibuat lebih ketat agar tidak false positive pada kata umum seperti "verifikasi".
+        visible_text = (await page.locator("body").inner_text()).lower()
+        text_markers = [
+            "i'm not a robot",
+            "i am not a robot",
+            "human verification",
+            "security check",
+            "complete the captcha",
+            "enter the characters you see below",
+            "recaptcha",
+            "hcaptcha",
+        ]
+        if any(marker in visible_text for marker in text_markers):
+            logger.warning("Captcha terdeteksi via teks yang sangat spesifik.")
             screenshot_dir = "captcha_screenshots"
             if not os.path.exists(screenshot_dir):
                 os.makedirs(screenshot_dir)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            await page.screenshot(path=f"{screenshot_dir}/recaptcha_{timestamp}.png")
+            await page.screenshot(path=f"{screenshot_dir}/captcha_text_{timestamp}.png")
             return True
-        
-        # Deteksi hCaptcha
-        hcaptcha_frame = await page.query_selector('iframe[src*="hcaptcha"]')
-        if hcaptcha_frame:
-            logger.warning("hCaptcha terdeteksi!")
-            screenshot_dir = "captcha_screenshots"
-            if not os.path.exists(screenshot_dir):
-                os.makedirs(screenshot_dir)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            await page.screenshot(path=f"{screenshot_dir}/hcaptcha_{timestamp}.png")
-            return True
-        
-        # Deteksi teks yang mungkin terkait dengan captcha
-        content = await page.content()
-        if any(text in content.lower() for text in ["captcha", "robot", "human verification", "verifikasi"]):
-            logger.warning("Teks terkait captcha terdeteksi!")
-            screenshot_dir = "captcha_screenshots"
-            if not os.path.exists(screenshot_dir):
-                os.makedirs(screenshot_dir)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            await page.screenshot(path=f"{screenshot_dir}/possible_captcha_{timestamp}.png")
-            return True
-            
+
         return False
     except Exception as e:
         logger.error(f"Error saat mendeteksi captcha: {str(e)}")
@@ -885,7 +1228,10 @@ async def detect_captcha(page):
 # Tingkatkan perilaku manusia dengan pola ketik yang lebih realistis
 async def human_type_improved(page, selector, text):
     """Ketik teks dengan pola manusia yang lebih realistis"""
-    await page.focus(selector)
+    if isinstance(selector, str):
+        await page.focus(selector)
+    else:
+        await selector.focus()
     await human_delay_short()  # Sedikit jeda sebelum mulai mengetik
     
     # Manusia sering mengetik dalam "burst" - kita akan mensimulasikan ini
@@ -1004,7 +1350,7 @@ async def human_click_improved(page, selector_or_element):
         
         # Jika posisi awal tidak ada (pertama kali), buat sedikit di luar viewport
         if start_x == 0 and start_y == 0:
-            viewport = await page.viewport_size()
+            viewport = page.viewport_size
             start_x = random.randint(-20, viewport['width'] + 20)
             start_y = random.randint(-20, viewport['height'] + 20)
         
@@ -1066,6 +1412,68 @@ async def human_click_improved(page, selector_or_element):
         return True
     except Exception as e:
         logger.error(f"Error saat mengklik elemen: {str(e)}")
+        return False
+
+async def human_type_into_element(page, element, text):
+    """Ketik ke element handle spesifik agar tidak salah mengisi field lain."""
+    try:
+        await element.scroll_into_view_if_needed()
+        await human_click_improved(page, element)
+        await human_delay_short()
+        try:
+            await element.fill("")
+        except Exception:
+            pass
+        await human_type_improved(page, element, text)
+        return True
+    except Exception as e:
+        logger.error(f"Error saat mengetik ke elemen spesifik: {str(e)}")
+        return False
+
+async def select_group_option(page, group_element, choice_text, role):
+    """Pilih opsi dalam grup radio/checkbox tertentu, bukan global satu halaman."""
+    try:
+        selector = f'div[role="{role}"]'
+        options = await group_element.query_selector_all(selector)
+        normalized_choice = normalize_action_label(choice_text)
+
+        for option in options:
+            if not await is_element_visible(option):
+                continue
+
+            option_text = await extract_option_label(option)
+            normalized_option = normalize_action_label(option_text)
+            logger.debug(f"Opsi {role} kandidat: {normalized_option}")
+            if (
+                normalized_option == normalized_choice
+                or normalized_choice in normalized_option
+                or normalized_option in normalized_choice
+            ):
+                await option.scroll_into_view_if_needed()
+                await human_click_improved(page, option)
+                await human_delay_short()
+
+                checked = (await option.get_attribute("aria-checked") or "").lower()
+                if checked == "true":
+                    return True
+
+                try:
+                    await option.click(force=True)
+                    await human_delay_short()
+                except Exception:
+                    pass
+
+                checked = (await option.get_attribute("aria-checked") or "").lower()
+                if checked == "true":
+                    return True
+
+                logger.warning(f"Opsi '{choice_text}' ditemukan tetapi tidak berubah menjadi terpilih.")
+                return False
+
+        logger.warning(f"Tidak bisa menemukan opsi '{choice_text}' dalam grup {role}.")
+        return False
+    except Exception as e:
+        logger.error(f"Error saat memilih opsi '{choice_text}' di grup {role}: {str(e)}")
         return False
 
 async def main():
@@ -1177,7 +1585,8 @@ async def main():
                     logger.info(f"\nMengisi formulir ke-{i} dari {TOTAL_RESPONSES} (Sesi {session+1})...")
                     
                     # Coba isi formulir
-                    if await fill_universal_form(page, form_analyzer, i, test_mode=test_mode):
+                    result = await fill_universal_form(page, form_analyzer, i, test_mode=test_mode)
+                    if result:
                         session_success += 1
                         total_success += 1
                         
@@ -1185,6 +1594,9 @@ async def main():
                         if test_mode:
                             logger.info("Pengujian berhasil! Menghentikan pengujian setelah 1 form.")
                             break
+                    elif not form_analyzer.questions:
+                        logger.error("Menghentikan sesi karena analisis form tidak berhasil.")
+                        break
                     
                     # Tampilkan kemajuan
                     forms_completed = i - session_start + 1
@@ -1199,7 +1611,7 @@ async def main():
                         logger.info(f"Perkiraan waktu tersisa sesi ini: {remaining_session_time/60:.1f} menit")
                     
                     # Variasi jeda antar pengisian (1.5-3 menit)
-                    if i < session_end and not test_mode:
+                    if i < session_end and not test_mode and form_analyzer.questions:
                         wait_time = random.uniform(90, 180)  # 1.5-3 menit
                         logger.info(f"Menunggu {wait_time:.1f} detik sebelum mengisi formulir berikutnya...")
                         await asyncio.sleep(wait_time)
