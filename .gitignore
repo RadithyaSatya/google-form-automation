@@ -24,6 +24,9 @@ captcha_screenshots/
 analysis_debug/
 test_results/
 form_structures/
+build/
+dist/
+*.spec
 
 # OS/editor noise
 .DS_Store

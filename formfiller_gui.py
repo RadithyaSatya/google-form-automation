@@ -51,6 +51,46 @@ class FormFillerGUI:
         # Status process
         self.process_running = False
         self.current_process = None
+
+    def get_base_dir(self):
+        """Direktori dasar aplikasi untuk mode source maupun frozen."""
+        if getattr(sys, "frozen", False):
+            return os.path.dirname(sys.executable)
+        return os.path.dirname(os.path.abspath(__file__))
+
+    def get_python_command(self):
+        """Resolver interpreter Python yang paling masuk akal untuk environment saat ini."""
+        base_dir = self.get_base_dir()
+
+        bundled_candidates = [
+            os.path.join(base_dir, "venv-win", "Scripts", "python.exe"),
+            os.path.join(base_dir, ".venv", "Scripts", "python.exe"),
+            os.path.join(base_dir, ".venv", "bin", "python"),
+            os.path.join(base_dir, "venv", "Scripts", "python.exe"),
+            os.path.join(base_dir, "venv", "bin", "python"),
+        ]
+
+        for candidate in bundled_candidates:
+            if os.path.exists(candidate):
+                return candidate
+
+        return sys.executable or "python"
+
+    def get_filler_command_prefix(self):
+        """Tentukan command prefix untuk menjalankan CLI filler."""
+        base_dir = self.get_base_dir()
+
+        if getattr(sys, "frozen", False):
+            exe_candidates = [
+                os.path.join(base_dir, "playwright_form_filler.exe"),
+                os.path.join(base_dir, "playwright_form_filler"),
+            ]
+            for candidate in exe_candidates:
+                if os.path.exists(candidate):
+                    return [candidate]
+
+        script_path = os.path.join(base_dir, "playwright_form_filler.py")
+        return [self.get_python_command(), script_path]
         
     def create_main_tab(self):
         main_frame = ttk.LabelFrame(self.main_tab, text="Konfigurasi")
@@ -191,7 +231,7 @@ PERINGATAN: Gunakan aplikasi ini hanya untuk tujuan pendidikan dan dengan izin p
     
     def build_command(self, test_mode=False):
         """Bangun perintah untuk menjalankan script filler"""
-        cmd = ["python", "playwright_form_filler.py"]
+        cmd = self.get_filler_command_prefix()
         
         # Tambahkan parameter
         cmd.append(self.form_url.get())

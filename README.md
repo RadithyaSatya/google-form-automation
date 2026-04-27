@@ -53,6 +53,52 @@ pip install -r requirements.txt
 playwright install
 ```
 
+## Distribusi ke Pengguna Lain
+
+Ada 2 cara yang realistis untuk dibagikan.
+
+### Opsi 1: Portable Windows dengan `venv-win`
+
+Jika folder `venv-win` sudah lengkap, pengguna Windows bisa langsung memakai launcher:
+
+- `run_gui_portable_windows.bat`
+- `run_cli_portable_windows.bat`
+
+Keunggulan:
+
+- Tidak perlu install Python manual
+- Cocok untuk pemakaian internal
+- Paling dekat dengan setup Anda sekarang
+
+Catatan:
+
+- Paket ini tetap bergantung pada dependency di dalam `venv-win`
+- Browser Playwright tetap harus sudah tersedia di environment target
+
+### Opsi 2: Executable Windows
+
+Repo ini sekarang menyediakan builder:
+
+```bat
+build_windows_exe.bat
+```
+
+File itu akan:
+
+- install dependency build dari `requirements-build.txt`
+- membuat `playwright_form_filler.exe`
+- membuat bundle GUI `formfiller_gui.exe`
+- menyalin CLI exe ke dalam folder GUI bundle
+
+Hasil akhir ada di:
+
+- `dist\formfiller_gui\formfiller_gui.exe`
+
+Catatan:
+
+- Build `exe` sebaiknya dijalankan di Windows
+- Untuk Playwright, lebih aman memakai mode `--onedir` seperti konfigurasi saat ini dibanding memaksa `--onefile`
+
 ## Penggunaan
 
 ### Menggunakan GUI
