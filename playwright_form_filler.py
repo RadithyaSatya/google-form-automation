@@ -57,6 +57,55 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36 Edg/96.0.1054.62"
 ]
 
+MALE_FIRST_NAMES = [
+    "Aaron", "Adrian", "Ahmad", "Aidan", "Aksel", "Albert", "Alex", "Alif", "Andi", "Andrew",
+    "Anthony", "Arif", "Arthur", "Bagus", "Bayu", "Benjamin", "Brian", "Caleb", "Carlos", "Daniel",
+    "David", "Deni", "Dimas", "Dylan", "Edward", "Eko", "Ethan", "Fajar", "Felix", "Gabriel",
+    "George", "Gunawan", "Hadi", "Henry", "Ilham", "Irfan", "Isaac", "Jack", "James", "Jason",
+    "Jonathan", "Joseph", "Joshua", "Julian", "Kevin", "Leo", "Liam", "Logan", "Lucas", "Luke",
+    "Matthew", "Michael", "Muhammad", "Nathan", "Nicholas", "Noah", "Oliver", "Owen", "Rafael", "Rafi",
+    "Rayhan", "Ryan", "Samuel", "Theo", "Thomas", "Tomi", "William", "Yusuf", "Zayn", "Zidan",
+]
+
+FEMALE_FIRST_NAMES = [
+    "Aaliyah", "Abigail", "Adeline", "Aisyah", "Alexa", "Alice", "Alya", "Amanda", "Amelia", "Anisa",
+    "Anna", "Ariana", "Ashley", "Aubrey", "Aulia", "Aurora", "Ava", "Avery", "Ayu", "Bella",
+    "Camila", "Charlotte", "Chloe", "Clara", "Citra", "Dewi", "Dinda", "Diora", "Ella", "Emily",
+    "Emma", "Evelyn", "Fatima", "Fitri", "Gabriella", "Grace", "Hana", "Hannah", "Indah", "Isabella",
+    "Jasmine", "Julia", "Kayla", "Kartika", "Layla", "Leah", "Lestari", "Lily", "Luna", "Maya",
+    "Mia", "Nabila", "Nadia", "Naomi", "Natalie", "Nurul", "Olivia", "Putri", "Rania", "Rina",
+    "Sabrina", "Safira", "Sari", "Sophia", "Tiara", "Violet", "Wulan", "Yuni", "Zahra", "Zoe",
+]
+
+MALE_LAST_NAMES = [
+    "Adams", "Anderson", "Brown", "Campbell", "Carter", "Clark", "Collins", "Cruz", "Davis", "Diaz",
+    "Evans", "Foster", "Garcia", "Gonzalez", "Gray", "Green", "Hall", "Harris", "Hernandez", "Hill",
+    "Howard", "Hughes", "Jackson", "James", "Johnson", "Jones", "King", "Lee", "Lewis", "Martin",
+    "Martinez", "Miller", "Mitchell", "Moore", "Morgan", "Morris", "Murphy", "Nelson", "Nguyen", "Parker",
+    "Patel", "Perez", "Peterson", "Phillips", "Pratama", "Rahman", "Ramirez", "Reed", "Richardson", "Rivera",
+    "Roberts", "Robinson", "Rodriguez", "Sanchez", "Scott", "Setiawan", "Sharma", "Singh", "Smith", "Stewart",
+    "Sullivan", "Taylor", "Thomas", "Thompson", "Turner", "Walker", "Ward", "Watson", "White", "Wijaya",
+    "Williams", "Wilson", "Wright", "Young", "Yunus", "Nugroho", "Hidayat", "Kusuma", "Firmansyah", "Maulana",
+    "Fauzi", "Saputra", "Putra", "Gunawan", "Prakoso", "Wibowo", "Permana", "Ramadhan", "Siregar", "Herlambang",
+]
+
+FEMALE_LAST_NAMES = [
+    "Azzahra", "Cahyani", "Clarke", "Collins", "Dewanti", "Fitriani", "Garcia", "Grace", "Handayani", "Hasanah",
+    "Hernandez", "Hill", "Hutami", "Indriani", "Iskandar", "Julianti", "Kirana", "Kusumawati", "Lestari", "Maharani",
+    "Maulida", "Monroe", "Nainggolan", "Naomi", "Novianti", "Nugraheni", "Oktaviani", "Permatasari", "Prameswari", "Putri",
+    "Rahma", "Rahmawati", "Ramadhani", "Rizqiani", "Roberts", "Rodriguez", "Rosalina", "Salsabila", "Sanchez", "Saputri",
+    "Sari", "Setyaningsih", "Shafira", "Sophia", "Sukmawati", "Sullivan", "Susanti", "Taylor", "Utami", "Valentina",
+    "Wardhani", "Wati", "Wijayanti", "Wulandari", "Yolanda", "Yuliana", "Yusnita", "Zahara", "Amalia", "Puspitasari",
+    "Anggraini", "Febriani", "Aulia", "Nuraini", "Kartikasari", "Widyaningsih", "Melawati", "Paramitha", "Ratnasari", "Safitri",
+]
+
+MALE_PREFIX_TITLES = ["Mr.", "H.", "Dr.", "Ir."]
+FEMALE_PREFIX_TITLES = ["Ms.", "Mrs.", "Dr.", "Dra."]
+NEUTRAL_SUFFIX_TITLES = [
+    "S.H.", "S.Kom.", "S.E.", "S.Sos.", "S.Pd.", "S.T.", "S.Farm.", "M.Kom.", "M.M.", "M.Si.",
+    "M.Pd.", "M.H.", "M.Farm", "M.Farm.", "A.Md.", "A.Md.Kom.", "S.Ked.", "drg.", "apt.",
+]
+
 # Konfigurasi logging
 import logging
 LOG_DIR = "logs"
@@ -300,6 +349,78 @@ async def wait_for_form_ready(page):
             await asyncio.sleep(0.4)
     return False
 
+async def get_page_signature(page):
+    """Ambil fingerprint ringan halaman aktif untuk mendeteksi progres navigasi."""
+    try:
+        return await page.evaluate("""
+            () => {
+                const title = document.title || "";
+                const bodyText = (document.body?.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 1200);
+                const nextButton = Array.from(document.querySelectorAll('div[role="button"], span[role="button"]'))
+                    .map((el) => (el.innerText || el.textContent || "").trim())
+                    .filter(Boolean)
+                    .join(" | ");
+                return `${location.href}||${title}||${bodyText}||${nextButton}`;
+            }
+        """)
+    except Exception:
+        try:
+            return f"{page.url}||fallback"
+        except Exception:
+            return "unknown-page"
+
+async def wait_for_page_signature_change(page, previous_signature, timeout_ms=6000):
+    """Tunggu sampai fingerprint halaman berubah."""
+    deadline = time.time() + (timeout_ms / 1000)
+    while time.time() < deadline:
+        current_signature = await get_page_signature(page)
+        if current_signature != previous_signature:
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+async def click_action_button_with_retry(page, button_item, action_name):
+    """Klik tombol aksi dengan beberapa strategi dan verifikasi perubahan halaman."""
+    previous_signature = await get_page_signature(page)
+    attempts = [
+        "human_click",
+        "element_click",
+        "dom_click",
+    ]
+
+    for attempt in attempts:
+        try:
+            await button_item["element"].scroll_into_view_if_needed()
+        except Exception:
+            pass
+
+        try:
+            await natural_scroll_improved(page, 180)
+        except Exception:
+            pass
+
+        await human_delay_short()
+
+        try:
+            if attempt == "human_click":
+                await human_click_improved(page, button_item["element"])
+            elif attempt == "element_click":
+                await button_item["element"].click(force=True)
+            else:
+                await button_item["element"].evaluate("(el) => el.click()")
+        except Exception as e:
+            logger.warning(f"Gagal klik {action_name} dengan metode {attempt}: {str(e)}")
+            continue
+
+        await wait_for_form_ready(page)
+        changed = await wait_for_page_signature_change(page, previous_signature, timeout_ms=5000)
+        if changed:
+            return True
+
+        logger.warning(f"Klik {action_name} dengan metode {attempt} tidak mengubah halaman.")
+
+    return False
+
 async def handle_next_or_submit(page):
     """Klik tombol Next/Submit yang terlihat dengan prioritas Next lebih dulu."""
     try:
@@ -323,15 +444,20 @@ async def handle_next_or_submit(page):
 
         if next_btn:
             logger.info("➡️ Next page detected")
-            await human_click_improved(page, next_btn["element"])
-            await wait_for_form_ready(page)
-            await asyncio.sleep(0.8)
-            return "next"
+            moved = await click_action_button_with_retry(page, next_btn, "Next")
+            if moved:
+                await asyncio.sleep(0.8)
+                return "next"
+            logger.warning("Tombol Next terdeteksi tetapi halaman tidak berubah.")
+            return "none"
 
         if submit_btn:
             logger.info("✅ Submit detected")
-            await human_click_improved(page, submit_btn["element"])
-            return "submit"
+            moved = await click_action_button_with_retry(page, submit_btn, "Submit")
+            if moved:
+                return "submit"
+            logger.warning("Tombol Submit terdeteksi tetapi halaman tidak berubah.")
+            return "none"
 
         logger.warning("⚠️ No action button found")
         return "none"
@@ -360,6 +486,20 @@ async def inspect_action_buttons(page):
         except Exception:
             continue
     return sorted(buttons, key=lambda item: item["y"])
+
+async def detect_page_action_state(page):
+    """Ringkas aksi utama yang tersedia pada halaman aktif."""
+    buttons = await inspect_action_buttons(page)
+    labels = [normalize_action_label(item["label"]) for item in buttons]
+    submit_labels = {"kirim", "submit", "send"}
+    next_labels = {"berikutnya", "next"}
+
+    return {
+        "buttons": buttons,
+        "labels": labels,
+        "has_next": any(label in next_labels for label in labels),
+        "has_submit": any(label in submit_labels for label in labels),
+    }
 
 async def is_element_visible(element):
     """Cek apakah elemen benar-benar terlihat di halaman aktif."""
@@ -518,21 +658,40 @@ class FormAnalyzer:
 
     def _generate_gendered_name(self, selected_gender):
         if selected_gender == "male":
-            for attr in ("name_male", "first_name_male"):
-                generator = getattr(fake, attr, None)
-                if callable(generator):
-                    value = generator()
-                    if value:
-                        return value
+            first_name_pool = MALE_FIRST_NAMES
+            last_name_pool = MALE_LAST_NAMES
+            prefix_pool = MALE_PREFIX_TITLES
         elif selected_gender == "female":
-            for attr in ("name_female", "first_name_female"):
-                generator = getattr(fake, attr, None)
-                if callable(generator):
-                    value = generator()
-                    if value:
-                        return value
+            first_name_pool = FEMALE_FIRST_NAMES
+            last_name_pool = FEMALE_LAST_NAMES
+            prefix_pool = FEMALE_PREFIX_TITLES
+        else:
+            first_name_pool = MALE_FIRST_NAMES + FEMALE_FIRST_NAMES
+            last_name_pool = MALE_LAST_NAMES + FEMALE_LAST_NAMES
+            prefix_pool = MALE_PREFIX_TITLES + FEMALE_PREFIX_TITLES
 
-        return fake.name()
+        first_name = random.choice(first_name_pool)
+        name_parts = [first_name]
+
+        if random.random() < 0.35:
+            middle_candidates = [name for name in first_name_pool if name != first_name]
+            if middle_candidates:
+                name_parts.append(random.choice(middle_candidates))
+
+        last_name_count = 1 if random.random() < 0.8 else 2
+        name_parts.extend(random.sample(last_name_pool, k=last_name_count))
+
+        full_name = " ".join(name_parts)
+
+        if random.random() < 0.18:
+            full_name = f"{random.choice(prefix_pool)} {full_name}"
+
+        if random.random() < 0.22:
+            suffix_count = 1 if random.random() < 0.85 else 2
+            suffixes = random.sample(NEUTRAL_SUFFIX_TITLES, k=suffix_count)
+            full_name = f"{full_name}, {' '.join(suffixes)}"
+
+        return full_name
 
     def prepare_response_context(self, questions, response_context=None):
         """Siapkan konteks respons agar jawaban lintas-pertanyaan tetap konsisten."""
@@ -758,13 +917,18 @@ class FormAnalyzer:
                 'element': group['element']
             })
 
-        # Fallback embedded-data hanya dipakai bila halaman aktif benar-benar tidak punya kontrol terdeteksi.
+        # Fallback embedded-data hanya dipakai bila halaman aktif benar-benar tidak punya kontrol terdeteksi
+        # dan halaman ini bukan intro/section kosong yang hanya punya tombol Berikutnya.
         if not self.questions and not (self.text_inputs or radio_groups or checkbox_groups or dropdown_groups):
-            page_content = await safe_get_page_content(page)
-            embedded_questions = self.extract_questions_from_embedded_data(page_content)
-            if embedded_questions:
-                self.questions.extend(embedded_questions)
-                logger.info(f"Fallback embedded-data berhasil: {len(embedded_questions)} pertanyaan diekstrak")
+            action_state = await detect_page_action_state(page)
+            if action_state["has_next"] and not action_state["has_submit"]:
+                logger.info("Halaman aktif tidak punya pertanyaan terlihat dan hanya menampilkan tombol Next; fallback embedded-data dilewati.")
+            else:
+                page_content = await safe_get_page_content(page)
+                embedded_questions = self.extract_questions_from_embedded_data(page_content)
+                if embedded_questions:
+                    self.questions.extend(embedded_questions)
+                    logger.info(f"Fallback embedded-data berhasil: {len(embedded_questions)} pertanyaan diekstrak")
         
         logger.info(f"Total {len(self.questions)} pertanyaan terdeteksi")
 
@@ -1231,12 +1395,31 @@ async def fill_universal_form(page, form_analyzer, response_number, test_mode=Fa
         
         page_number = 1
         response_context = {}
+        repeated_signature_count = 0
+        last_signature = None
 
         while True:
+            current_signature = await get_page_signature(page)
+            if current_signature == last_signature:
+                repeated_signature_count += 1
+            else:
+                repeated_signature_count = 0
+                last_signature = current_signature
+
+            if repeated_signature_count >= 3:
+                logger.error(f"Loop dihentikan karena halaman yang sama terdeteksi berulang kali di page counter {page_number}.")
+                await form_analyzer.save_analysis_debug(page, "stuck_same_page")
+                return False
+
             await form_analyzer.analyze_form(page, debug_mode=test_mode)
 
             if not form_analyzer.questions:
-                logger.error(f"Analisis form gagal di halaman {page_number}: 0 pertanyaan terdeteksi. Membatalkan proses ini.")
+                logger.warning(f"Halaman {page_number} tidak memiliki pertanyaan terdeteksi.")
+                action = await handle_next_or_submit(page)
+                if action == "next":
+                    page_number += 1
+                    continue
+                logger.error(f"Analisis form gagal di halaman {page_number}: 0 pertanyaan terdeteksi dan tidak ada tombol lanjut yang bisa dipakai.")
                 return False
 
             await human_delay_medium()
