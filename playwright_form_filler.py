@@ -469,6 +469,95 @@ class FormAnalyzer:
         self.dropdown_groups = []
         self.language = 'unknown'
         self.debug_mode = False
+
+    def _question_mentions_gender(self, question_text):
+        normalized_text = normalize_action_label(question_text)
+        gender_keywords = [
+            "jenis kelamin",
+            "gender",
+            "sex",
+            "jenis gender",
+        ]
+        return any(keyword in normalized_text for keyword in gender_keywords)
+
+    def _classify_gender_option(self, option_text):
+        normalized_option = normalize_action_label(option_text)
+        male_markers = [
+            "laki laki",
+            "laki-laki",
+            "pria",
+            "male",
+            "man",
+            "boy",
+        ]
+        female_markers = [
+            "perempuan",
+            "wanita",
+            "female",
+            "woman",
+            "girl",
+        ]
+
+        if any(marker in normalized_option for marker in male_markers):
+            return "male"
+        if any(marker in normalized_option for marker in female_markers):
+            return "female"
+        return None
+
+    def _choose_gender_option(self, options):
+        classified_options = []
+        for option in options:
+            gender_label = self._classify_gender_option(option)
+            if gender_label:
+                classified_options.append((option, gender_label))
+
+        if not classified_options:
+            return None
+
+        return random.choice(classified_options)
+
+    def _generate_gendered_name(self, selected_gender):
+        if selected_gender == "male":
+            for attr in ("name_male", "first_name_male"):
+                generator = getattr(fake, attr, None)
+                if callable(generator):
+                    value = generator()
+                    if value:
+                        return value
+        elif selected_gender == "female":
+            for attr in ("name_female", "first_name_female"):
+                generator = getattr(fake, attr, None)
+                if callable(generator):
+                    value = generator()
+                    if value:
+                        return value
+
+        return fake.name()
+
+    def prepare_response_context(self, questions, response_context=None):
+        """Siapkan konteks respons agar jawaban lintas-pertanyaan tetap konsisten."""
+        if response_context is None:
+            response_context = {}
+
+        if response_context.get("selected_gender"):
+            return response_context
+
+        for question in questions:
+            if question.get('type') not in ['radio', 'dropdown']:
+                continue
+            if not self._question_mentions_gender(question.get('question', '')):
+                continue
+
+            selected = self._choose_gender_option(question.get('options', []))
+            if not selected:
+                continue
+
+            selected_option, selected_gender = selected
+            response_context["gender_answer"] = selected_option
+            response_context["selected_gender"] = selected_gender
+            break
+
+        return response_context
         
     async def detect_language(self, page):
         """Mendeteksi bahasa formulir"""
@@ -845,9 +934,10 @@ class FormAnalyzer:
             logger.error(f"Error saat memuat struktur form: {str(e)}")
             return False
 
-    def generate_answer(self, question):
+    def generate_answer(self, question, response_context=None):
         """Menghasilkan jawaban acak berdasarkan jenis pertanyaan dengan peningkatan multi-bahasa"""
         question_text = question['question'].lower()
+        response_context = response_context or {}
 
         def filter_free_text_options(options):
             blocked_markers = [
@@ -921,7 +1011,14 @@ class FormAnalyzer:
             # Deteksi berdasarkan teks pertanyaan
             for lang, keywords in name_keywords.items():
                 if any(keyword in question_text for keyword in keywords):
-                    return fake.name()
+                    cached_name = response_context.get("generated_name")
+                    if cached_name:
+                        return cached_name
+
+                    selected_gender = response_context.get("selected_gender")
+                    generated_name = self._generate_gendered_name(selected_gender)
+                    response_context["generated_name"] = generated_name
+                    return generated_name
             
             for lang, keywords in email_keywords.items():
                 if any(keyword in question_text for keyword in keywords):
@@ -955,6 +1052,11 @@ class FormAnalyzer:
             return fake.paragraph(nb_sentences=random.randint(3, 6))
                 
         elif question['type'] == 'radio':
+            if self._question_mentions_gender(question['question']):
+                prepared_answer = response_context.get("gender_answer")
+                if prepared_answer:
+                    return prepared_answer
+
             # Pilih satu opsi acak
             valid_options = filter_free_text_options(question['options'])
             if len(valid_options) > 0:
@@ -964,6 +1066,11 @@ class FormAnalyzer:
             return None
         
         elif question['type'] == 'dropdown':
+            if self._question_mentions_gender(question['question']):
+                prepared_answer = response_context.get("gender_answer")
+                if prepared_answer:
+                    return prepared_answer
+
             # Pilih satu opsi acak, tapi hindari opsi pertama (biasanya "Pilih...")
             dropdown_options = question['options'][1:] if len(question['options']) > 1 else question['options']
             valid_options = filter_free_text_options(dropdown_options)
@@ -986,10 +1093,12 @@ class FormAnalyzer:
             
         return None
 
-async def fill_current_page_questions(page, form_analyzer, test_mode=False):
+async def fill_current_page_questions(page, form_analyzer, response_context=None, test_mode=False):
     """Isi semua pertanyaan yang terdeteksi pada halaman aktif."""
     if not form_analyzer.questions:
         return
+
+    response_context = form_analyzer.prepare_response_context(form_analyzer.questions, response_context)
 
     for i, question in enumerate(form_analyzer.questions):
         logger.info(f"Mengisi pertanyaan {i+1}: {question['question'][:50]}{'...' if len(question['question']) > 50 else ''}")
@@ -1001,7 +1110,7 @@ async def fill_current_page_questions(page, form_analyzer, test_mode=False):
         except Exception:
             await natural_scroll_improved(page, 200)
 
-        answer = form_analyzer.generate_answer(question)
+        answer = form_analyzer.generate_answer(question, response_context=response_context)
 
         if test_mode:
             logger.debug(f"Jawaban yang akan dimasukkan: {answer}")
@@ -1121,6 +1230,7 @@ async def fill_universal_form(page, form_analyzer, response_number, test_mode=Fa
             return False
         
         page_number = 1
+        response_context = {}
 
         while True:
             await form_analyzer.analyze_form(page, debug_mode=test_mode)
@@ -1131,7 +1241,7 @@ async def fill_universal_form(page, form_analyzer, response_number, test_mode=Fa
 
             await human_delay_medium()
             await natural_scroll_improved(page, 300, smooth=True)
-            await fill_current_page_questions(page, form_analyzer, test_mode=test_mode)
+            await fill_current_page_questions(page, form_analyzer, response_context=response_context, test_mode=test_mode)
 
             if test_mode:
                 logger.info("Mode pengujian aktif: form tidak akan disubmit")
