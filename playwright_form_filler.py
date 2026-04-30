@@ -99,13 +99,6 @@ FEMALE_LAST_NAMES = [
     "Anggraini", "Febriani", "Aulia", "Nuraini", "Kartikasari", "Widyaningsih", "Melawati", "Paramitha", "Ratnasari", "Safitri",
 ]
 
-MALE_PREFIX_TITLES = ["Mr.", "H.", "Dr.", "Ir."]
-FEMALE_PREFIX_TITLES = ["Ms.", "Mrs.", "Dr.", "Dra."]
-NEUTRAL_SUFFIX_TITLES = [
-    "S.H.", "S.Kom.", "S.E.", "S.Sos.", "S.Pd.", "S.T.", "S.Farm.", "M.Kom.", "M.M.", "M.Si.",
-    "M.Pd.", "M.H.", "M.Farm", "M.Farm.", "A.Md.", "A.Md.Kom.", "S.Ked.", "drg.", "apt.",
-]
-
 # Konfigurasi logging
 import logging
 LOG_DIR = "logs"
@@ -660,15 +653,12 @@ class FormAnalyzer:
         if selected_gender == "male":
             first_name_pool = MALE_FIRST_NAMES
             last_name_pool = MALE_LAST_NAMES
-            prefix_pool = MALE_PREFIX_TITLES
         elif selected_gender == "female":
             first_name_pool = FEMALE_FIRST_NAMES
             last_name_pool = FEMALE_LAST_NAMES
-            prefix_pool = FEMALE_PREFIX_TITLES
         else:
             first_name_pool = MALE_FIRST_NAMES + FEMALE_FIRST_NAMES
             last_name_pool = MALE_LAST_NAMES + FEMALE_LAST_NAMES
-            prefix_pool = MALE_PREFIX_TITLES + FEMALE_PREFIX_TITLES
 
         first_name = random.choice(first_name_pool)
         name_parts = [first_name]
@@ -681,25 +671,114 @@ class FormAnalyzer:
         last_name_count = 1 if random.random() < 0.8 else 2
         name_parts.extend(random.sample(last_name_pool, k=last_name_count))
 
-        full_name = " ".join(name_parts)
+        # Nama dijaga tetap bersih tanpa gelar/punctuation tambahan agar natural dan konsisten.
+        return " ".join(part.strip() for part in name_parts if part and part.strip())
 
-        if random.random() < 0.18:
-            full_name = f"{random.choice(prefix_pool)} {full_name}"
+    def _question_mentions_status(self, question_text):
+        normalized_text = normalize_action_label(question_text)
+        status_keywords = [
+            "status",
+            "pekerjaan saat ini",
+            "aktivitas utama",
+        ]
+        return any(keyword in normalized_text for keyword in status_keywords)
 
-        if random.random() < 0.22:
-            suffix_count = 1 if random.random() < 0.85 else 2
-            suffixes = random.sample(NEUTRAL_SUFFIX_TITLES, k=suffix_count)
-            full_name = f"{full_name}, {' '.join(suffixes)}"
+    def _question_mentions_age(self, question_text):
+        normalized_text = normalize_action_label(question_text)
+        age_keywords = [
+            "usia",
+            "umur",
+            "age",
+        ]
+        return any(keyword in normalized_text for keyword in age_keywords)
 
-        return full_name
+    def _normalize_status_option(self, option_text):
+        normalized_option = normalize_action_label(option_text)
+        if "siswa" in normalized_option:
+            return "siswa"
+        if "mahasiswa" in normalized_option:
+            return "mahasiswa"
+        if "pekerja" in normalized_option:
+            return "pekerja"
+        return None
+
+    def _normalize_age_option(self, option_text):
+        compact = re.sub(r"\s+", "", option_text or "")
+        compact = compact.replace("–", "-").replace("—", "-")
+        match = re.search(r"(\d{1,2})-(\d{1,2})", compact)
+        if not match:
+            return None
+        return f"{match.group(1)}-{match.group(2)}"
+
+    def _pick_status_age_pair(self, available_status_options, available_age_options):
+        age_rules = {
+            "siswa": {"18-19"},
+            "mahasiswa": {"20-21", "22-23"},
+            "pekerja": {"22-23", "24-25"},
+        }
+
+        status_map = {}
+        for option in available_status_options:
+            canonical = self._normalize_status_option(option)
+            if canonical and canonical not in status_map:
+                status_map[canonical] = option
+
+        age_map = {}
+        for option in available_age_options:
+            canonical = self._normalize_age_option(option)
+            if canonical and canonical not in age_map:
+                age_map[canonical] = option
+
+        valid_pairs = []
+        for status_key, age_keys in age_rules.items():
+            if status_key not in status_map:
+                continue
+            for age_key in age_keys:
+                if age_key in age_map:
+                    valid_pairs.append((status_map[status_key], status_key, age_map[age_key], age_key))
+
+        if not valid_pairs:
+            return None
+
+        return random.choice(valid_pairs)
+
+    def _pick_status_for_age(self, available_status_options, selected_age_range):
+        compatible_statuses = {
+            "18-19": {"siswa"},
+            "20-21": {"mahasiswa"},
+            "22-23": {"mahasiswa", "pekerja"},
+            "24-25": {"pekerja"},
+        }
+        allowed = compatible_statuses.get(selected_age_range, set())
+        candidates = []
+        for option in available_status_options:
+            canonical = self._normalize_status_option(option)
+            if canonical in allowed:
+                candidates.append((option, canonical))
+        if candidates:
+            return random.choice(candidates)
+        return None
+
+    def _pick_age_for_status(self, available_age_options, selected_status):
+        compatible_ages = {
+            "siswa": {"18-19"},
+            "mahasiswa": {"20-21", "22-23"},
+            "pekerja": {"22-23", "24-25"},
+        }
+        allowed = compatible_ages.get(selected_status, set())
+        candidates = []
+        for option in available_age_options:
+            canonical = self._normalize_age_option(option)
+            if canonical in allowed:
+                candidates.append((option, canonical))
+        if candidates:
+            return random.choice(candidates)
+        return None
 
     def prepare_response_context(self, questions, response_context=None):
         """Siapkan konteks respons agar jawaban lintas-pertanyaan tetap konsisten."""
         if response_context is None:
             response_context = {}
-
-        if response_context.get("selected_gender"):
-            return response_context
 
         for question in questions:
             if question.get('type') not in ['radio', 'dropdown']:
@@ -715,6 +794,33 @@ class FormAnalyzer:
             response_context["gender_answer"] = selected_option
             response_context["selected_gender"] = selected_gender
             break
+
+        status_question = None
+        age_question = None
+        for question in questions:
+            if question.get('type') not in ['radio', 'dropdown']:
+                continue
+            question_text = question.get('question', '')
+            if not status_question and self._question_mentions_status(question_text):
+                status_question = question
+            if not age_question and self._question_mentions_age(question_text):
+                age_question = question
+
+        if status_question and age_question:
+            has_status = response_context.get("status_answer") and response_context.get("selected_status")
+            has_age = response_context.get("age_answer") and response_context.get("selected_age_range")
+
+            if not (has_status and has_age):
+                paired_choice = self._pick_status_age_pair(
+                    status_question.get('options', []),
+                    age_question.get('options', []),
+                )
+                if paired_choice:
+                    status_answer, status_key, age_answer, age_key = paired_choice
+                    response_context["status_answer"] = status_answer
+                    response_context["selected_status"] = status_key
+                    response_context["age_answer"] = age_answer
+                    response_context["selected_age_range"] = age_key
 
         return response_context
         
@@ -1216,6 +1322,56 @@ class FormAnalyzer:
             return fake.paragraph(nb_sentences=random.randint(3, 6))
                 
         elif question['type'] == 'radio':
+            if self._question_mentions_status(question['question']):
+                prepared_answer = response_context.get("status_answer")
+                if prepared_answer:
+                    return prepared_answer
+
+                selected_age_range = response_context.get("selected_age_range")
+                if selected_age_range:
+                    selected_status = self._pick_status_for_age(question['options'], selected_age_range)
+                    if selected_status:
+                        status_answer, status_key = selected_status
+                        response_context["status_answer"] = status_answer
+                        response_context["selected_status"] = status_key
+                        return status_answer
+
+                recognized_options = []
+                for option in question['options']:
+                    canonical = self._normalize_status_option(option)
+                    if canonical:
+                        recognized_options.append((option, canonical))
+                if recognized_options:
+                    status_answer, status_key = random.choice(recognized_options)
+                    response_context["status_answer"] = status_answer
+                    response_context["selected_status"] = status_key
+                    return status_answer
+
+            if self._question_mentions_age(question['question']):
+                prepared_answer = response_context.get("age_answer")
+                if prepared_answer:
+                    return prepared_answer
+
+                selected_status = response_context.get("selected_status")
+                if selected_status:
+                    selected_age = self._pick_age_for_status(question['options'], selected_status)
+                    if selected_age:
+                        age_answer, age_key = selected_age
+                        response_context["age_answer"] = age_answer
+                        response_context["selected_age_range"] = age_key
+                        return age_answer
+
+                recognized_options = []
+                for option in question['options']:
+                    canonical = self._normalize_age_option(option)
+                    if canonical:
+                        recognized_options.append((option, canonical))
+                if recognized_options:
+                    age_answer, age_key = random.choice(recognized_options)
+                    response_context["age_answer"] = age_answer
+                    response_context["selected_age_range"] = age_key
+                    return age_answer
+
             if self._question_mentions_gender(question['question']):
                 prepared_answer = response_context.get("gender_answer")
                 if prepared_answer:
@@ -1230,6 +1386,56 @@ class FormAnalyzer:
             return None
         
         elif question['type'] == 'dropdown':
+            if self._question_mentions_status(question['question']):
+                prepared_answer = response_context.get("status_answer")
+                if prepared_answer:
+                    return prepared_answer
+
+                selected_age_range = response_context.get("selected_age_range")
+                if selected_age_range:
+                    selected_status = self._pick_status_for_age(question['options'], selected_age_range)
+                    if selected_status:
+                        status_answer, status_key = selected_status
+                        response_context["status_answer"] = status_answer
+                        response_context["selected_status"] = status_key
+                        return status_answer
+
+                recognized_options = []
+                for option in question['options']:
+                    canonical = self._normalize_status_option(option)
+                    if canonical:
+                        recognized_options.append((option, canonical))
+                if recognized_options:
+                    status_answer, status_key = random.choice(recognized_options)
+                    response_context["status_answer"] = status_answer
+                    response_context["selected_status"] = status_key
+                    return status_answer
+
+            if self._question_mentions_age(question['question']):
+                prepared_answer = response_context.get("age_answer")
+                if prepared_answer:
+                    return prepared_answer
+
+                selected_status = response_context.get("selected_status")
+                if selected_status:
+                    selected_age = self._pick_age_for_status(question['options'], selected_status)
+                    if selected_age:
+                        age_answer, age_key = selected_age
+                        response_context["age_answer"] = age_answer
+                        response_context["selected_age_range"] = age_key
+                        return age_answer
+
+                recognized_options = []
+                for option in question['options']:
+                    canonical = self._normalize_age_option(option)
+                    if canonical:
+                        recognized_options.append((option, canonical))
+                if recognized_options:
+                    age_answer, age_key = random.choice(recognized_options)
+                    response_context["age_answer"] = age_answer
+                    response_context["selected_age_range"] = age_key
+                    return age_answer
+
             if self._question_mentions_gender(question['question']):
                 prepared_answer = response_context.get("gender_answer")
                 if prepared_answer:
